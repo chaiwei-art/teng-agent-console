@@ -201,8 +201,12 @@ async def run_agent(
         else:
             decision = mock.next_step(observations)
 
-        # Thought（流式逐 token 推送）
-        thought = decision.get("thought") or ("我来整理已有信息，直接回答用户。" if decision["type"] == "answer" else "")
+        # Thought（流式逐 token 推送）；模型未输出 Thought 时套用默认文案
+        thought = decision.get("thought") or (
+            "我来整理已有信息，直接回答用户。"
+            if decision["type"] == "answer"
+            else f"调用工具 {decision.get('action', '')}"
+        )
         thought_tokens = _split_tokens(thought)
         for tk in thought_tokens:
             await emit("thought_delta", {"step": step, "text": tk})
@@ -274,22 +278,51 @@ async def _real_llm_step(
 
     resp = await client.chat.completions.create(model=model, messages=messages, temperature=0.2)
     text = resp.choices[0].message.content or ""
+    return parse_react_text(text)
 
-    # 兼容模型输出的粗体标签（**Thought**:）与纯文本（Thought:）两种风格
-    m = re.search(r"\*{0,2}Action\*{0,2}[:：]\s*(\w+)\s*(\{.*?\})?\s*$", text, re.MULTILINE | re.DOTALL)
+
+def parse_react_text(text: str) -> Dict[str, Any]:
+    """把模型输出解析为 ReAct 决策（纯函数，便于单测）。
+
+    兼容多种输出风格：
+    - 粗体标签（**Thought**:）与纯文本标签（Thought:）
+    - 工具参数同行内联：Action: query_order {"order_id": "..."}
+    - 经典换行格式：Action: query_order + Action Input: {...}
+    - 缺少 Answer 标签的退化输出：去掉开头 Thought 行作为回答
+    """
     thought_m = re.search(
         r"\*{0,2}Thought\*{0,2}[:：]\s*(.*?)(?=\*{0,2}Action\*{0,2}[:：]|\*{0,2}Answer\*{0,2}[:：]|$)",
         text,
         re.DOTALL | re.MULTILINE,
     )
-    thought = thought_m.group(1).strip() if thought_m else text[:200]
-    if m and m.group(1) in {s["name"] for s in TOOL_SPECS}:
+    # 无 Thought 标签时留空，由 run_agent 套用默认文案（避免把回答正文当思考展示）
+    thought = thought_m.group(1).strip() if thought_m else ""
+    answer_m = re.search(r"\*{0,2}Answer\*{0,2}[:：]\s*(.*)", text, re.DOTALL)
+
+    # 只有模型未给出明确 Answer 时才按工具调用处理（Action 与 Answer 并存 → 以 Answer 为准）
+    action_m = re.search(r"\*{0,2}Action\*{0,2}[:：]\s*(\w+)", text) if not answer_m else None
+    if action_m and action_m.group(1) in {s["name"] for s in TOOL_SPECS}:
+        tool = action_m.group(1)
+        input_m = re.search(r"Action\s+Input\*{0,2}[:：]\s*(\{.*?\})", text, re.DOTALL)
+        if not input_m:
+            input_m = re.search(
+                r"Action\*{0,2}[:：]\s*" + re.escape(tool) + r"\s*(\{.*?\})", text, re.DOTALL
+            )
         args: Dict[str, Any] = {}
-        if m.group(2):
+        if input_m:
             try:
-                args = json.loads(m.group(2))
+                args = json.loads(input_m.group(1))
             except json.JSONDecodeError:
                 args = {}
-        return {"type": "action", "thought": thought, "action": m.group(1), "args": args}
-    ans_m = re.search(r"\*{0,2}Answer\*{0,2}[:：]\s*(.*)", text, re.DOTALL)
-    return {"type": "answer", "thought": thought, "text": (ans_m.group(1) if ans_m else text).strip()}
+        return {"type": "action", "thought": thought, "action": tool, "args": args}
+
+    if answer_m:
+        answer = answer_m.group(1).strip()
+    elif thought_m:
+        # 模型未输出 Answer 标签时：去掉开头的 Thought 行，避免回答区重复展示思考
+        answer = text[thought_m.end():].strip().lstrip("*").strip()
+    else:
+        answer = text.strip()
+    if not answer:
+        answer = text.strip()
+    return {"type": "answer", "thought": thought, "text": answer}

@@ -163,7 +163,7 @@ watch(
           </div>
         </div>
         <div class="mode-tag" v-if="run.meta">
-          {{ run.meta.mode === 'real' ? `🤖 ${run.meta.model}` : run.meta.mode === 'fallback' ? '↩️ 已降级 Mock' : '🧪 Mock 模式' }}
+          {{ run.meta.mode === 'real' ? `🤖 ${run.meta.model}` : run.meta.mode === 'local' ? '🖥 浏览器演示（离线）' : run.meta.mode === 'fallback' ? '↩️ 已降级 Mock' : '🧪 Mock 模式' }}
         </div>
       </header>
 
