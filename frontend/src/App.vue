@@ -110,6 +110,9 @@ async function submit(preset) {
     answer_done: (d) => {
       run.answer = d.text
       run.answerStreaming = false
+      // 最后一步是回答步，收尾时标记完成
+      const last = run.steps[run.steps.length - 1]
+      if (last) { last.status = 'done'; last.thoughtStreaming = false }
       run.history.push({ role: 'assistant', content: d.text })
       scrollBottom()
     },

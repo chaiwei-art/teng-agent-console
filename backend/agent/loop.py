@@ -275,8 +275,13 @@ async def _real_llm_step(
     resp = await client.chat.completions.create(model=model, messages=messages, temperature=0.2)
     text = resp.choices[0].message.content or ""
 
-    m = re.search(r"Action[:：]\s*(\w+)\s*(\{.*?\})?\s*$", text, re.MULTILINE | re.DOTALL)
-    thought_m = re.search(r"Thought[:：]\s*(.*?)(?=Action|Answer|$)", text, re.DOTALL | re.MULTILINE)
+    # 兼容模型输出的粗体标签（**Thought**:）与纯文本（Thought:）两种风格
+    m = re.search(r"\*{0,2}Action\*{0,2}[:：]\s*(\w+)\s*(\{.*?\})?\s*$", text, re.MULTILINE | re.DOTALL)
+    thought_m = re.search(
+        r"\*{0,2}Thought\*{0,2}[:：]\s*(.*?)(?=\*{0,2}Action\*{0,2}[:：]|\*{0,2}Answer\*{0,2}[:：]|$)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
     thought = thought_m.group(1).strip() if thought_m else text[:200]
     if m and m.group(1) in {s["name"] for s in TOOL_SPECS}:
         args: Dict[str, Any] = {}
@@ -286,5 +291,5 @@ async def _real_llm_step(
             except json.JSONDecodeError:
                 args = {}
         return {"type": "action", "thought": thought, "action": m.group(1), "args": args}
-    ans_m = re.search(r"Answer[:：]\s*(.*)", text, re.DOTALL)
+    ans_m = re.search(r"\*{0,2}Answer\*{0,2}[:：]\s*(.*)", text, re.DOTALL)
     return {"type": "answer", "thought": thought, "text": (ans_m.group(1) if ans_m else text).strip()}
